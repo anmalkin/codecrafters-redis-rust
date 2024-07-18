@@ -1,6 +1,6 @@
 use std::{
     io::{Read, Write},
-    net::TcpListener,
+    net::{TcpListener, TcpStream},
 };
 
 fn main() -> std::io::Result<()> {
@@ -12,23 +12,27 @@ fn main() -> std::io::Result<()> {
         match stream {
             Ok(mut stream) => {
                 println!("accepted new connection");
-                let mut buf = [0; 512];
-                loop {
-                    let n = stream.read(&mut buf)?;
-                    println!("received {} bytes", n);
-
-                    if n == 0 {
-                        break;
-                    }
-
-                    stream.write_all(b"+PONG\r\n")?;
-
-                }
+                std::thread::spawn(move || handle_connection(&mut stream));
             }
             Err(e) => {
                 println!("error: {}", e);
             }
         }
+    }
+    Ok(())
+}
+
+fn handle_connection(stream: &mut TcpStream) -> std::io::Result<()> {
+    let mut buf = [0; 512];
+    loop {
+        let n = stream.read(&mut buf)?;
+        println!("received {} bytes", n);
+
+        if n == 0 {
+            break;
+        }
+
+        stream.write_all(b"+PONG\r\n")?;
     }
     Ok(())
 }
