@@ -23,7 +23,7 @@ fn main() -> std::io::Result<()> {
     Ok(())
 }
 
-fn handle_connection(mut stream: TcpStream) -> RedisResult {
+fn handle_connection(mut stream: TcpStream) -> Result<(), RESPError> {
     let mut buf = BytesMut::with_capacity(512);
     loop {
         let n = stream.read(&mut buf)?;
@@ -35,24 +35,18 @@ fn handle_connection(mut stream: TcpStream) -> RedisResult {
             break;
         }
 
-        match parse(&b)? {
-            Some((_pos, val)) => {
-                let response = match val {
-                    RedisValue::String(_) => todo!(),
-                    RedisValue::Error(_) => todo!(),
-                    RedisValue::Int(_) => todo!(),
-                    RedisValue::Array(vec) => {
-                        dispatch(&vec);
-                    },
-                    RedisValue::NullArray => todo!(),
-                    RedisValue::NullBulkString => todo!(),
-                };
-            },
-            None => return Ok(None),
+        let cmd: RedisCommand;
+        let args: &[RedisValue];
+
+        if let Some((_pos, RedisValue::Array(vec))) = parse(&b)? {
+            cmd = command(&vec)?;
+            args = &vec[1..];
+            run(&mut stream, cmd, args)?;
+        } else {
+            return Err(RESPError::InvalidCommand);
         }
-        stream.write_all(b"+PONG\r\n")?;
     }
-    Ok(None)
+    Ok(())
 }
 
 #[derive(PartialEq, Clone)]
@@ -72,6 +66,12 @@ pub enum RESPError {
     IntParseFailure,
     BadBulkStringSize(i64),
     BadArraySize(i64),
+    InvalidCommand,
+}
+
+pub enum RedisCommand {
+    PING,
+    ECHO,
 }
 
 impl From<std::io::Error> for RESPError {
@@ -209,19 +209,34 @@ fn parse(buf: &Bytes) -> RedisResult {
     }
 }
 
-fn dispatch(arr: &[RedisValue]) -> Bytes {
-    let cmd = arr.get(0).unwrap();
-    let arg = arr.get(1);
+fn command(arr: &[RedisValue]) -> Result<RedisCommand, RESPError> {
+    if arr.is_empty() {
+        return Err(RESPError::InvalidCommand);
+    }
+    let cmd = arr.first().unwrap();
     if let RedisValue::String(str) = cmd {
-        match &str[..] {
-            b"ping" => return Bytes::from("+PONG\r\n"),
-            b"echo" => {
-                if let Some(RedisValue::String(str)) = arg.unwrap() {
-                    return Bytes::from(&str[..])
-                }
-            } 
+        match std::str::from_utf8(str).unwrap() {
+            "ping" => Ok(RedisCommand::PING),
+            "echo" => Ok(RedisCommand::ECHO),
+            _ => Err(RESPError::InvalidCommand),
         }
     } else {
-        Bytes::new()
+        Err(RESPError::InvalidCommand)
     }
+}
+
+fn run(stream: &mut TcpStream, cmd: RedisCommand, args: &[RedisValue]) -> Result<(), RESPError> {
+    match cmd {
+        RedisCommand::PING => stream.write_all(b"+PONG\r\n")?,
+        RedisCommand::ECHO => {
+            if args.is_empty() {
+                return Err(RESPError::InvalidCommand);
+            }
+            if let RedisValue::String(str) = args.get(1).unwrap() {
+                let response = std::str::from_utf8(str).unwrap();
+                stream.write_all(format!("{}\r\n", response).as_bytes())?;
+            }
+        }
+    }
+    Ok(())
 }
