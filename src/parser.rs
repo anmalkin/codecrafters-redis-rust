@@ -48,9 +48,9 @@ pub fn execute(
         _ => return Err(RESPError::InvalidCommand),
     };
 
-    match cmd.as_str() {
-        "PING" => stream.write_all(b"+PONG\r\n")?,
-        "ECHO" => {
+    match cmd.to_lowercase().as_str() {
+        "ping" => stream.write_all(b"+PONG\r\n")?,
+        "echo" => {
             if msg.len() < 2 {
                 return Err(RESPError::InvalidArguments);
             }
@@ -59,7 +59,7 @@ pub fn execute(
                 stream.write_all(format!("${}\r\n{}\r\n", length, str).as_bytes())?;
             }
         }
-        "GET" => {
+        "get" => {
             if msg.len() < 2 {
                 return Err(RESPError::InvalidArguments);
             }
@@ -75,7 +75,7 @@ pub fn execute(
                 None => stream.write_all(NULL)?,
             }
         },
-        "SET" => {
+        "set" => {
             if msg.len() < 3 {
                 return Err(RESPError::InvalidArguments);
             }
