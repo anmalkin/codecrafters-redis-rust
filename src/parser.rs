@@ -2,13 +2,28 @@ use std::collections::HashMap;
 use std::io::Write;
 use std::net::TcpStream;
 use std::str::from_utf8;
+use std::time::{Duration, Instant};
 
 use crate::errors::RESPError;
 
 const NULL: &[u8] = b"$-1\r\n";
 const OK: &[u8] = b"+OK\r\n";
 
-pub type KVStore = HashMap<String, String>;
+pub type KVStore = HashMap<String, (String, Option<Expiry>)>;
+type RedisResult = Result<Option<(usize, RedisValue)>, RESPError>;
+
+pub struct Expiry(Instant, Duration);
+struct BufSplit(usize, usize);
+
+impl BufSplit {
+    /// Get a lifetime appropriate slice of the underlying buffer.
+    ///
+    /// Constant time.
+    #[inline]
+    fn as_slice<'a>(&self, buf: &'a [u8]) -> &'a [u8] {
+        &buf[self.0..self.1]
+    }
+}
 
 #[derive(Debug, PartialEq, Clone)]
 pub enum RedisValue {
@@ -65,49 +80,66 @@ pub fn execute(
             }
             let key = match msg.get(1).unwrap() {
                 RedisValue::String(key) => key,
-                _ => return Err(RESPError::InvalidArguments)
+                _ => return Err(RESPError::InvalidArguments),
             };
             match store.get(key) {
-                Some(value) => {
+                Some((value, None)) => {
                     let len = value.len();
                     stream.write_all(format!("${}\r\n{}\r\n", len, value).as_bytes())?;
-                },
+                }
+                Some((value, Some(Expiry(start, duration)))) => {
+                    if start.elapsed() < *duration {
+                        let len = value.len();
+                        stream.write_all(format!("${}\r\n{}\r\n", len, value).as_bytes())?;
+                    } else {
+                        stream.write_all(NULL)?;
+                    }
+                }
                 None => stream.write_all(NULL)?,
             }
-        },
+        }
         "set" => {
             if msg.len() < 3 {
                 return Err(RESPError::InvalidArguments);
             }
             let key = match msg.get(1).unwrap() {
                 RedisValue::String(key) => key,
-                _ => return Err(RESPError::InvalidArguments)
+                _ => return Err(RESPError::InvalidArguments),
             };
             let value = match msg.get(2).unwrap() {
                 RedisValue::String(value) => value,
-                _ => return Err(RESPError::InvalidArguments)
+                _ => return Err(RESPError::InvalidArguments),
             };
-            store.insert(key.to_owned(), value.to_owned());
-            stream.write_all(OK)?;
-
-        },
+            if msg.len() > 4 {
+                let flag = match msg.get(3).unwrap() {
+                    RedisValue::String(flag) => flag,
+                    _ => return Err(RESPError::InvalidArguments),
+                };
+                let opt = match msg.get(4).unwrap() {
+                    RedisValue::String(opt_as_str) => opt_as_str.parse::<u64>()?,
+                    _ => return Err(RESPError::InvalidArguments),
+                };
+                match flag.to_lowercase().as_str() {
+                    "px" => {
+                        store.insert(
+                            key.to_owned(),
+                            (
+                                value.to_owned(),
+                                Some(Expiry(Instant::now(), Duration::from_millis(opt))),
+                            ),
+                        );
+                        stream.write_all(OK)?;
+                    }
+                    _ => return Err(RESPError::InvalidArguments),
+                }
+            } else {
+                store.insert(key.to_owned(), (value.to_owned(), None));
+                stream.write_all(OK)?;
+            }
+        }
         _ => return Err(RESPError::InvalidCommand),
     }
     Ok(())
-}
-
-type RedisResult = Result<Option<(usize, RedisValue)>, RESPError>;
-
-struct BufSplit(usize, usize);
-
-impl BufSplit {
-    /// Get a lifetime appropriate slice of the underlying buffer.
-    ///
-    /// Constant time.
-    #[inline]
-    fn as_slice<'a>(&self, buf: &'a [u8]) -> &'a [u8] {
-        &buf[self.0..self.1]
-    }
 }
 
 // Get a word from `buf` starting at `pos`
