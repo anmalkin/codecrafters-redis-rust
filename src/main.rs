@@ -1,17 +1,16 @@
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::str::from_utf8;
+use std::thread;
 
 fn main() -> std::io::Result<()> {
-    println!("Logs from your program will appear here!");
-
     let listener = TcpListener::bind("127.0.0.1:6379")?;
 
     for stream in listener.incoming() {
         match stream {
             Ok(stream) => {
                 println!("accepted new connection");
-                std::thread::spawn(move || handle_connection(stream));
+                thread::spawn(move || handle_connection(stream));
             }
             Err(e) => {
                 println!("error: {}", e);
@@ -22,11 +21,10 @@ fn main() -> std::io::Result<()> {
 }
 
 fn handle_connection(mut stream: TcpStream) -> Result<(), RESPError> {
-    let mut buf = Vec::with_capacity(512);
+    let mut buf = vec![0; 512];
     loop {
-        let n = stream.read(&mut buf)?;
+        let n = stream.read(buf.as_mut_slice())?;
         println!("received {} bytes", n);
-        println!("len of buf = {}", buf.len());
 
         if n == 0 {
             break;
@@ -35,7 +33,7 @@ fn handle_connection(mut stream: TcpStream) -> Result<(), RESPError> {
         let cmd: RedisCommand;
         let args: &[RedisValue];
 
-        if let Some((_pos, RedisValue::Array(vec))) = parse(buf.as_slice())? {
+        if let Some((_pos, RedisValue::Array(vec))) = parse(buf.as_slice(), 0)? {
             cmd = command(&vec)?;
             args = &vec[1..];
             run(&mut stream, cmd, args)?;
@@ -46,7 +44,7 @@ fn handle_connection(mut stream: TcpStream) -> Result<(), RESPError> {
     Ok(())
 }
 
-#[derive(PartialEq, Clone)]
+#[derive(Debug, PartialEq, Clone)]
 pub enum RedisValue {
     String(String),
     Error(String),
@@ -168,12 +166,12 @@ fn array(buf: &[u8], pos: usize) -> RedisResult {
         Some((pos, -1)) => Ok(Some((pos, RedisValue::NullArray))),
         Some((pos, arr_size)) if arr_size >= 0 => {
             let mut res: Vec<RedisValue> = Vec::with_capacity(arr_size as usize);
-            let mut next_pos = pos;
+            let mut curr_pos = pos;
             for _ in 0..arr_size {
-                match parse(&buf[next_pos..])? {
+                match parse(buf, curr_pos)? {
                     Some((pos, val)) => {
                         res.push(val);
-                        next_pos = pos;
+                        curr_pos = pos;
                     }
                     None => return Err(RESPError::UnexpectedEnd),
                 }
@@ -185,16 +183,16 @@ fn array(buf: &[u8], pos: usize) -> RedisResult {
     }
 }
 
-fn parse(buf: &[u8]) -> RedisResult {
+fn parse(buf: &[u8], pos: usize) -> RedisResult {
     if buf.is_empty() {
         return Ok(None);
     }
-    match buf[0] {
-        b'*' => array(buf, 1),
-        b'$' => bulk_string(buf, 1),
-        b'+' => simple_string(buf, 1),
-        b'-' => error(buf, 1),
-        b':' => redis_int(buf, 1),
+    match buf[pos] {
+        b'*' => array(buf, pos + 1),
+        b'$' => bulk_string(buf, pos + 1),
+        b'+' => simple_string(buf, pos + 1),
+        b'-' => error(buf, pos + 1),
+        b':' => redis_int(buf, pos + 1),
         _ => Err(RESPError::UnknownStartingByte),
     }
 }
@@ -206,8 +204,8 @@ fn command(arr: &[RedisValue]) -> Result<RedisCommand, RESPError> {
     let cmd = arr.first().unwrap();
     if let RedisValue::String(str) = cmd {
         match &str[..] {
-            "ping" => Ok(RedisCommand::PING),
-            "echo" => Ok(RedisCommand::ECHO),
+            "PING" => Ok(RedisCommand::PING),
+            "ECHO" => Ok(RedisCommand::ECHO),
             _ => Err(RESPError::InvalidCommand),
         }
     } else {
@@ -222,7 +220,7 @@ fn run(stream: &mut TcpStream, cmd: RedisCommand, args: &[RedisValue]) -> Result
             if args.is_empty() {
                 return Err(RESPError::InvalidCommand);
             }
-            if let RedisValue::String(str) = args.get(1).unwrap() {
+            if let RedisValue::String(str) = args.get(0).unwrap() {
                 let length = str.len();
                 stream.write_all(format!("${}\r\n{}\r\n", length, str).as_bytes())?;
             }
