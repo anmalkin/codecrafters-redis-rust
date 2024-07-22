@@ -1,8 +1,14 @@
+use std::collections::HashMap;
 use std::io::Write;
 use std::net::TcpStream;
 use std::str::from_utf8;
 
 use crate::errors::RESPError;
+
+const NULL: &[u8] = b"$-1\r\n";
+const OK: &[u8] = b"+OK\r\n";
+
+pub type KVStore = HashMap<String, String>;
 
 #[derive(Debug, PartialEq, Clone)]
 pub enum RedisValue {
@@ -30,28 +36,64 @@ pub fn parse(buf: &[u8], pos: usize) -> RedisResult {
 
 pub fn execute(
     stream: &mut TcpStream,
-    args: &[RedisValue],
+    msg: &[RedisValue],
+    store: &mut KVStore,
 ) -> Result<(), RESPError> {
-    if args.is_empty() {
-        return Err(RESPError::InvalidCommand);
+    if msg.is_empty() {
+        return Err(RESPError::UnknownStartingByte);
     }
-    let cmd = args.first().unwrap();
-    if let RedisValue::String(str) = cmd {
-        match &str[..] {
-            "PING" => stream.write_all(b"+PONG\r\n")?,
-            "ECHO" => {
-                if args.is_empty() {
-                    return Err(RESPError::InvalidCommand);
-                }
-                if let RedisValue::String(str) = args.first().unwrap() {
-                    let length = str.len();
-                    stream.write_all(format!("${}\r\n{}\r\n", length, str).as_bytes())?;
-                }
+
+    let cmd = match msg.first().unwrap() {
+        RedisValue::String(str) => str,
+        _ => return Err(RESPError::InvalidCommand),
+    };
+
+    match cmd.as_str() {
+        "PING" => stream.write_all(b"+PONG\r\n")?,
+        "ECHO" => {
+            if msg.len() < 2 {
+                return Err(RESPError::InvalidArguments);
             }
-            _ => return Err(RESPError::InvalidCommand),
+            if let Some(RedisValue::String(str)) = msg.get(1) {
+                let length = str.len();
+                stream.write_all(format!("${}\r\n{}\r\n", length, str).as_bytes())?;
+            }
         }
+        "GET" => {
+            if msg.len() < 2 {
+                return Err(RESPError::InvalidArguments);
+            }
+            if let Some(RedisValue::String(key)) = msg.get(1) {
+                match store.get(key) {
+                    Some(value) => {
+                        let len = value.len();
+                        stream.write_all(format!("${}\r\n{}\r\n", len, value).as_bytes())?;
+                    },
+                    None => stream.write_all(NULL)?,
+                }
+            } else {
+                return Err(RESPError::InvalidArguments);
+            }
+        },
+        "SET" => {
+            if msg.len() < 3 {
+                return Err(RESPError::InvalidArguments);
+            }
+            let key = match msg.get(1).unwrap() {
+                RedisValue::String(key) => key,
+                _ => return Err(RESPError::InvalidArguments)
+            };
+            let value = match msg.get(2).unwrap() {
+                RedisValue::String(value) => value,
+                _ => return Err(RESPError::InvalidArguments)
+            };
+            store.insert(key.to_owned(), value.to_owned());
+            stream.write_all(OK)?;
+
+        },
+        _ => return Err(RESPError::InvalidCommand),
     }
-    Err(RESPError::InvalidCommand)
+    Ok(())
 }
 
 type RedisResult = Result<Option<(usize, RedisValue)>, RESPError>;

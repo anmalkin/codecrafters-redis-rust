@@ -5,7 +5,7 @@ use std::thread;
 mod errors;
 mod parser;
 
-use crate::parser::{parse, execute, RedisValue};
+use crate::parser::{parse, execute, RedisValue, KVStore};
 
 fn main() -> std::io::Result<()> {
     let listener = TcpListener::bind("127.0.0.1:6379")?;
@@ -26,6 +26,7 @@ fn main() -> std::io::Result<()> {
 
 fn handle_connection(mut stream: TcpStream) {
     let mut buf = vec![0; 512];
+    let mut store = KVStore::new();
     loop {
         let n = stream
             .read(buf.as_mut_slice())
@@ -48,7 +49,7 @@ fn handle_connection(mut stream: TcpStream) {
             }
         };
 
-        if let Err(e) = execute(&mut stream, &args) {
+        if let Err(e) = execute(&mut stream, &args, &mut store) {
             println!("Error: {}", e);
             break;
         }

@@ -9,6 +9,7 @@ pub enum RESPError {
     BadBulkStringSize(i64),
     BadArraySize(i64),
     InvalidCommand,
+    InvalidArguments,
 }
 
 impl From<std::io::Error> for RESPError {
@@ -29,6 +30,7 @@ impl Display for RESPError {
             }
             RESPError::BadArraySize(size) => write!(f, "Invalid array size of {} bytes.", size),
             RESPError::InvalidCommand => write!(f, "Invalid command."),
+            RESPError::InvalidArguments => write!(f, "Invalid arguments."),
         }
     }
 }
