@@ -220,7 +220,7 @@ fn run(stream: &mut TcpStream, cmd: RedisCommand, args: &[RedisValue]) -> Result
             if args.is_empty() {
                 return Err(RESPError::InvalidCommand);
             }
-            if let RedisValue::String(str) = args.get(0).unwrap() {
+            if let RedisValue::String(str) = args.first().unwrap() {
                 let length = str.len();
                 stream.write_all(format!("${}\r\n{}\r\n", length, str).as_bytes())?;
             }
