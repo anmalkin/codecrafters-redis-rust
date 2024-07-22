@@ -1,8 +1,6 @@
-use bytes::{Bytes, BytesMut};
-use std::{
-    io::{Read, Write},
-    net::{TcpListener, TcpStream},
-};
+use std::io::{Read, Write};
+use std::net::{TcpListener, TcpStream};
+use std::str::from_utf8;
 
 fn main() -> std::io::Result<()> {
     println!("Logs from your program will appear here!");
@@ -24,12 +22,11 @@ fn main() -> std::io::Result<()> {
 }
 
 fn handle_connection(mut stream: TcpStream) -> Result<(), RESPError> {
-    let mut buf = BytesMut::with_capacity(512);
+    let mut buf = Vec::with_capacity(512);
     loop {
         let n = stream.read(&mut buf)?;
         println!("received {} bytes", n);
         println!("len of buf = {}", buf.len());
-        let b = Bytes::from(buf.clone());
 
         if n == 0 {
             break;
@@ -38,7 +35,7 @@ fn handle_connection(mut stream: TcpStream) -> Result<(), RESPError> {
         let cmd: RedisCommand;
         let args: &[RedisValue];
 
-        if let Some((_pos, RedisValue::Array(vec))) = parse(&b)? {
+        if let Some((_pos, RedisValue::Array(vec))) = parse(buf.as_slice())? {
             cmd = command(&vec)?;
             args = &vec[1..];
             run(&mut stream, cmd, args)?;
@@ -51,8 +48,8 @@ fn handle_connection(mut stream: TcpStream) -> Result<(), RESPError> {
 
 #[derive(PartialEq, Clone)]
 pub enum RedisValue {
-    String(Bytes),
-    Error(Bytes),
+    String(String),
+    Error(String),
     Int(i64),
     Array(Vec<RedisValue>),
     NullArray,
@@ -89,22 +86,13 @@ impl BufSplit {
     ///
     /// Constant time.
     #[inline]
-    fn as_slice<'a>(&self, buf: &'a Bytes) -> &'a [u8] {
+    fn as_slice<'a>(&self, buf: &'a [u8]) -> &'a [u8] {
         &buf[self.0..self.1]
-    }
-
-    /// Get a Bytes object representing the appropriate slice
-    /// of bytes.
-    ///
-    /// Constant time.
-    #[inline]
-    fn as_bytes(&self, buf: &Bytes) -> Bytes {
-        buf.slice(self.0..self.1)
     }
 }
 
 // Get a word from `buf` starting at `pos`
-fn word(buf: &Bytes, pos: usize) -> Option<(usize, BufSplit)> {
+fn word(buf: &[u8], pos: usize) -> Option<(usize, BufSplit)> {
     if buf.len() <= pos {
         return None;
     }
@@ -118,17 +106,18 @@ fn word(buf: &Bytes, pos: usize) -> Option<(usize, BufSplit)> {
     Some((end + 2, BufSplit(pos, end)))
 }
 
-fn simple_string(buf: &Bytes, pos: usize) -> RedisResult {
+fn simple_string(buf: &[u8], pos: usize) -> RedisResult {
     match word(buf, pos) {
         Some((pos, word)) => {
-            let res = RedisValue::String(word.as_bytes(buf));
+            let str = from_utf8(word.as_slice(buf)).unwrap();
+            let res = RedisValue::String(str.to_string());
             Ok(Some((pos, res)))
         }
         None => Ok(None),
     }
 }
 
-fn bulk_string(buf: &Bytes, pos: usize) -> RedisResult {
+fn bulk_string(buf: &[u8], pos: usize) -> RedisResult {
     match int(buf, pos)? {
         Some((pos, -1)) => Ok(Some((pos, RedisValue::NullBulkString))),
         Some((pos, size)) if size >= 0 => {
@@ -144,17 +133,18 @@ fn bulk_string(buf: &Bytes, pos: usize) -> RedisResult {
     }
 }
 
-fn error(buf: &Bytes, pos: usize) -> RedisResult {
+fn error(buf: &[u8], pos: usize) -> RedisResult {
     match word(buf, pos) {
         Some((pos, word)) => {
-            let res = RedisValue::Error(word.as_bytes(buf));
+            let str = from_utf8(word.as_slice(buf)).unwrap();
+            let res = RedisValue::Error(str.to_string());
             Ok(Some((pos, res)))
         }
         None => Ok(None),
     }
 }
 
-fn int(buf: &Bytes, pos: usize) -> Result<Option<(usize, i64)>, RESPError> {
+fn int(buf: &[u8], pos: usize) -> Result<Option<(usize, i64)>, RESPError> {
     match word(buf, pos) {
         Some((pos, word)) => {
             let s =
@@ -166,21 +156,21 @@ fn int(buf: &Bytes, pos: usize) -> Result<Option<(usize, i64)>, RESPError> {
     }
 }
 
-fn redis_int(buf: &Bytes, pos: usize) -> RedisResult {
+fn redis_int(buf: &[u8], pos: usize) -> RedisResult {
     match int(buf, pos)? {
         Some((pos, i)) => Ok(Some((pos, RedisValue::Int(i)))),
         None => Ok(None),
     }
 }
 
-fn array(buf: &Bytes, pos: usize) -> RedisResult {
+fn array(buf: &[u8], pos: usize) -> RedisResult {
     match int(buf, pos)? {
         Some((pos, -1)) => Ok(Some((pos, RedisValue::NullArray))),
         Some((pos, arr_size)) if arr_size >= 0 => {
             let mut res: Vec<RedisValue> = Vec::with_capacity(arr_size as usize);
             let mut next_pos = pos;
             for _ in 0..arr_size {
-                match parse(&buf.slice(next_pos..))? {
+                match parse(&buf[next_pos..])? {
                     Some((pos, val)) => {
                         res.push(val);
                         next_pos = pos;
@@ -195,7 +185,7 @@ fn array(buf: &Bytes, pos: usize) -> RedisResult {
     }
 }
 
-fn parse(buf: &Bytes) -> RedisResult {
+fn parse(buf: &[u8]) -> RedisResult {
     if buf.is_empty() {
         return Ok(None);
     }
@@ -215,7 +205,7 @@ fn command(arr: &[RedisValue]) -> Result<RedisCommand, RESPError> {
     }
     let cmd = arr.first().unwrap();
     if let RedisValue::String(str) = cmd {
-        match std::str::from_utf8(str).unwrap() {
+        match &str[..] {
             "ping" => Ok(RedisCommand::PING),
             "echo" => Ok(RedisCommand::ECHO),
             _ => Err(RESPError::InvalidCommand),
@@ -233,8 +223,8 @@ fn run(stream: &mut TcpStream, cmd: RedisCommand, args: &[RedisValue]) -> Result
                 return Err(RESPError::InvalidCommand);
             }
             if let RedisValue::String(str) = args.get(1).unwrap() {
-                let response = std::str::from_utf8(str).unwrap();
-                stream.write_all(format!("{}\r\n", response).as_bytes())?;
+                let length = str.len();
+                stream.write_all(format!("${}\r\n{}\r\n", length, str).as_bytes())?;
             }
         }
     }
