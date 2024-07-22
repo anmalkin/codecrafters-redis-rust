@@ -63,16 +63,16 @@ pub fn execute(
             if msg.len() < 2 {
                 return Err(RESPError::InvalidArguments);
             }
-            if let Some(RedisValue::String(key)) = msg.get(1) {
-                match store.get(key) {
-                    Some(value) => {
-                        let len = value.len();
-                        stream.write_all(format!("${}\r\n{}\r\n", len, value).as_bytes())?;
-                    },
-                    None => stream.write_all(NULL)?,
-                }
-            } else {
-                return Err(RESPError::InvalidArguments);
+            let key = match msg.get(1).unwrap() {
+                RedisValue::String(key) => key,
+                _ => return Err(RESPError::InvalidArguments)
+            };
+            match store.get(key) {
+                Some(value) => {
+                    let len = value.len();
+                    stream.write_all(format!("${}\r\n{}\r\n", len, value).as_bytes())?;
+                },
+                None => stream.write_all(NULL)?,
             }
         },
         "SET" => {
